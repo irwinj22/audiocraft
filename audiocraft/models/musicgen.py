@@ -167,6 +167,10 @@ class MusicGen(BaseGenModel):
             melody_sample_rate: (int): Sample rate of the melody waveforms.
             progress (bool, optional): Flag to display progress of the generation process. Defaults to False.
         """
+
+        # some basic logging
+        print("WE ARE HERE!")
+
         if isinstance(melody_wavs, torch.Tensor):
             if melody_wavs.dim() == 2:
                 melody_wavs = melody_wavs[None]
@@ -178,10 +182,34 @@ class MusicGen(BaseGenModel):
                 if melody is not None:
                     assert melody.dim() == 2, "One melody in the list has the wrong number of dims."
 
-        melody_wavs = [
-            convert_audio(wav, melody_sample_rate, self.sample_rate, self.audio_channels)
-            if wav is not None else None
-            for wav in melody_wavs]
+        # --
+        # NEW METHOD: manually insert some .wav representation
+        # --
+
+        # mono (stereo) 
+        C = 1
+        # sample rate 
+        zero_sr = 32000
+        T = zero_sr
+
+        # create torch representation of .wav
+        # option 1: all zeroes
+        # gen_wav = torch.zeros((C, T), dtype=torch.float32)
+        # option 2: uniform random between [-1, 1]
+        gen_wav = 2 * torch.rand((C, T), dtype=torch.float32) - 1
+        
+        # use zeros instead:
+        melody_wavs = [convert_audio(gen_wav, melody_sample_rate, self.sample_rate, self.audio_channels)]
+
+        # --
+        # OLD METHOD: used input .wav to condition
+        # --
+
+        # melody_wavs = [
+        #     convert_audio(wav, melody_sample_rate, self.sample_rate, self.audio_channels)
+        #     if wav is not None else None
+        #     for wav in melody_wavs]
+        
         attributes, prompt_tokens = self._prepare_tokens_and_attributes(descriptions=descriptions, prompt=None,
                                                                         melody_wavs=melody_wavs)
         assert prompt_tokens is None
