@@ -167,9 +167,47 @@ class MusicGen(BaseGenModel):
             melody_sample_rate: (int): Sample rate of the melody waveforms.
             progress (bool, optional): Flag to display progress of the generation process. Defaults to False.
         """
+        # --
+        # NEW METHOD 1: manually insert some .wav representation
+        # --
 
-        # some basic logging
-        print("WE ARE HERE!")
+        # # mono (stereo) 
+        # C = 1
+        # # sample rate 
+        # zero_sr = 32000
+        # T = zero_sr
+
+        # # create torch representation of .wav
+        # # option 1: all zeroes
+        # # gen_wav = torch.zeros((C, T), dtype=torch.float32)
+        # # option 2: uniform random between [-1, 1]
+        # gen_wav = 2 * torch.rand((C, T), dtype=torch.float32) - 1
+        
+        # # use zeros instead:
+        # melody_wavs = [convert_audio(gen_wav, melody_sample_rate, self.sample_rate, self.audio_channels)]
+
+        # --
+        # NEW METHOD 2: average given melody with some random .wav
+        # --
+
+        # NOTE: melody_wavs is a just a python list of Tensors
+        # when just using one melody as conditioning input, melody_wavs is shape [1, ([1, 314000])]
+        # we want it to be something like this instead: [2, ([1, 314000], [1, C])]
+        # where C is the size of the other wav ... maybe this could be the conditioned drums, or the zeros? 
+        # or maybe it could be the random numbers, try to mess things up ... 
+
+        # create random .wav
+        # NOTE that the random.wav has to be the same size as the original conditioning tensor ..
+        gen_wav = 2 * torch.rand((1, melody_wavs[0].shape[-1]), dtype=torch.float32) - 1
+        
+        melody_wavs.append(gen_wav)
+
+        for melody in melody_wavs:
+            print(melody.shape)
+
+        # --
+        # OLD METHOD: use just input .wav to condition
+        # --
 
         if isinstance(melody_wavs, torch.Tensor):
             if melody_wavs.dim() == 2:
@@ -182,33 +220,10 @@ class MusicGen(BaseGenModel):
                 if melody is not None:
                     assert melody.dim() == 2, "One melody in the list has the wrong number of dims."
 
-        # --
-        # NEW METHOD: manually insert some .wav representation
-        # --
-
-        # mono (stereo) 
-        C = 1
-        # sample rate 
-        zero_sr = 32000
-        T = zero_sr
-
-        # create torch representation of .wav
-        # option 1: all zeroes
-        # gen_wav = torch.zeros((C, T), dtype=torch.float32)
-        # option 2: uniform random between [-1, 1]
-        gen_wav = 2 * torch.rand((C, T), dtype=torch.float32) - 1
-        
-        # use zeros instead:
-        melody_wavs = [convert_audio(gen_wav, melody_sample_rate, self.sample_rate, self.audio_channels)]
-
-        # --
-        # OLD METHOD: used input .wav to condition
-        # --
-
-        # melody_wavs = [
-        #     convert_audio(wav, melody_sample_rate, self.sample_rate, self.audio_channels)
-        #     if wav is not None else None
-        #     for wav in melody_wavs]
+        melody_wavs = [
+            convert_audio(wav, melody_sample_rate, self.sample_rate, self.audio_channels)
+            if wav is not None else None
+            for wav in melody_wavs]
         
         attributes, prompt_tokens = self._prepare_tokens_and_attributes(descriptions=descriptions, prompt=None,
                                                                         melody_wavs=melody_wavs)
@@ -248,23 +263,47 @@ class MusicGen(BaseGenModel):
             if 'self_wav' not in self.lm.condition_provider.conditioners:
                 raise RuntimeError("This model doesn't support melody conditioning. "
                                    "Use the `melody` model.")
-            assert len(melody_wavs) == len(descriptions), \
-                f"number of melody wavs must match number of descriptions! " \
-                f"got melody len={len(melody_wavs)}, and descriptions len={len(descriptions)}"
-            for attr, melody in zip(attributes, melody_wavs):
-                if melody is None:
+            
+            # if there are more melodies than descriptions, take average of all melodies 
+            # and then condition on that average for each description
+            # (ie, number of generated outputs will now depend on number of descriptions, not number of melodies)
+
+            if (len(melody_wavs) > len(descriptions)):
+                # average the melodies in melody_wavs
+                stacked_melodies = torch.stack(melody_wavs, dim=0)
+                avg_melody = torch.mean(stacked_melodies, dim=0)
+
+                print("AVERAGE MELODY: ", avg_melody)
+                print("AVG SHAPE: ", avg_melody.shape)
+
+                # then use for that average for each description
+                # NOTE: for now, there will just be on description, (I think)
+                for attr in attributes: 
                     attr.wav['self_wav'] = WavCondition(
-                        torch.zeros((1, 1, 1), device=self.device),
-                        torch.tensor([0], device=self.device),
-                        sample_rate=[self.sample_rate],
-                        path=[None])
-                else:
-                    attr.wav['self_wav'] = WavCondition(
-                        melody[None].to(device=self.device),
-                        torch.tensor([melody.shape[-1]], device=self.device),
-                        sample_rate=[self.sample_rate],
-                        path=[None],
-                    )
+                            avg_melody[None].to(device=self.device),
+                            torch.tensor([avg_melody.shape[-1]], device=self.device),
+                            sample_rate=[self.sample_rate],
+                            path=[None],
+                        )
+            else:
+                # TODO: only want to make this decision here now!
+                assert len(melody_wavs) == len(descriptions), \
+                    f"number of melody wavs must match number of descriptions! " \
+                    f"got melody len={len(melody_wavs)}, and descriptions len={len(descriptions)}"
+                for attr, melody in zip(attributes, melody_wavs):
+                    if melody is None:
+                        attr.wav['self_wav'] = WavCondition(
+                            torch.zeros((1, 1, 1), device=self.device),
+                            torch.tensor([0], device=self.device),
+                            sample_rate=[self.sample_rate],
+                            path=[None])
+                    else:
+                        attr.wav['self_wav'] = WavCondition(
+                            melody[None].to(device=self.device),
+                            torch.tensor([melody.shape[-1]], device=self.device),
+                            sample_rate=[self.sample_rate],
+                            path=[None],
+                        )
 
         if prompt is not None:
             if descriptions is not None:
